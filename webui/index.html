@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>hellotik 解析 · 本地 WebUI</title>
+<style>
+  :root{
+    --bg:#0b0d12; --panel:#14171f; --panel2:#1b1f29; --line:#272c38;
+    --txt:#e8eaf0; --dim:#8b93a7; --accent:#5b8cff; --accent2:#7c5cff;
+    --ok:#3ddc97; --warn:#ffb454; --err:#ff5f6d;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; min-height:100vh; background:radial-gradient(1200px 600px at 20% -10%,#1b2340 0%,var(--bg) 60%);
+    color:var(--txt); font:15px/1.6 -apple-system,"Segoe UI",system-ui,"Microsoft YaHei",sans-serif;
+    display:flex; flex-direction:column; align-items:center; padding:48px 20px 80px;
+  }
+  .wrap{width:100%; max-width:880px}
+  header{display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:6px}
+  h1{font-size:24px; margin:0; letter-spacing:.3px}
+  h1 span{background:linear-gradient(90deg,var(--accent),var(--accent2)); -webkit-background-clip:text; background-clip:text; color:transparent}
+  .sub{color:var(--dim); font-size:13px}
+  .card{
+    background:linear-gradient(180deg,var(--panel),var(--panel2)); border:1px solid var(--line);
+    border-radius:16px; padding:20px; margin-top:20px; box-shadow:0 10px 40px rgba(0,0,0,.35);
+  }
+  .row{display:flex; gap:10px; flex-wrap:wrap}
+  input[type=text]{
+    flex:1 1 320px; min-width:220px; background:#0e1117; border:1px solid var(--line); color:var(--txt);
+    border-radius:11px; padding:13px 14px; font-size:14px; outline:none; transition:.15s;
+  }
+  input[type=text]:focus{border-color:var(--accent); box-shadow:0 0 0 3px rgba(91,140,255,.15)}
+  button{
+    background:linear-gradient(135deg,var(--accent),var(--accent2)); color:#fff; border:0; border-radius:11px;
+    padding:13px 22px; font-size:14px; font-weight:600; cursor:pointer; transition:.15s; white-space:nowrap;
+  }
+  button:hover{filter:brightness(1.08)} button:disabled{opacity:.5; cursor:not-allowed; filter:none}
+  button.ghost{background:#1e2330; border:1px solid var(--line); color:var(--txt); font-weight:500}
+  .opts{display:flex; gap:18px; align-items:center; margin-top:14px; color:var(--dim); font-size:13px; flex-wrap:wrap}
+  .opt{display:flex; align-items:center; gap:7px; cursor:pointer; user-select:none}
+  .opt input{accent-color:var(--accent); width:15px; height:15px}
+  .badge{display:inline-block; padding:2px 9px; border-radius:999px; font-size:12px; border:1px solid var(--line); background:#11141b; color:var(--dim)}
+  .badge.douyin{color:#ff6b8a; border-color:#4a2634}
+  .badge.rednote{color:#ff5f6d; border-color:#4a2630}
+  .badge.kuaishou{color:#ff9f43; border-color:#4a3a24}
+  .badge.x{color:#9aa7ff; border-color:#31365a}
+  .msg{margin-top:14px; padding:12px 14px; border-radius:11px; font-size:13.5px; display:none}
+  .msg.err{display:block; background:rgba(255,95,109,.1); border:1px solid rgba(255,95,109,.35); color:#ffb3b9}
+  .msg.warn{display:block; background:rgba(255,180,84,.1); border:1px solid rgba(255,180,84,.35); color:#ffd9a0}
+  .msg.ok{display:block; background:rgba(61,220,151,.1); border:1px solid rgba(61,220,151,.35); color:#a8f0cd}
+  .info{display:flex; gap:18px; flex-wrap:wrap; margin-bottom:18px}
+  .cover{
+    width:132px; aspect-ratio:9/16; border-radius:12px; object-fit:cover; background:#0e1117;
+    border:1px solid var(--line); flex:0 0 auto
+  }
+  .meta{flex:1 1 260px; min-width:240px}
+  .title{font-size:17px; font-weight:600; margin:0 0 10px; word-break:break-word}
+  .kv{color:var(--dim); font-size:13px; display:flex; gap:8px; margin:4px 0; flex-wrap:wrap}
+  table{width:100%; border-collapse:collapse; margin-top:6px; font-size:13.5px}
+  th,td{padding:11px 10px; text-align:left; border-bottom:1px solid var(--line)}
+  th{color:var(--dim); font-weight:500; font-size:12.5px; text-transform:uppercase; letter-spacing:.5px}
+  tr.best td{background:rgba(61,220,151,.07)}
+  tr.load td{color:var(--dim); font-size:13px}
+  td.q{font-weight:600}
+  td .tag{font-size:11px; color:var(--ok); border:1px solid rgba(61,220,151,.4); border-radius:999px; padding:1px 7px; margin-left:6px}
+  td .tag.ms{color:#9fb4ff; border-color:rgba(159,180,255,.4)}
+  td:last-child{text-align:right; white-space:nowrap}
+  td .mini{padding:7px 13px; font-size:12.5px; border-radius:9px}
+  select{
+    background:#0e1117; border:1px solid var(--line); color:var(--txt); border-radius:8px;
+    padding:5px 8px; font-size:12.5px; outline:none;
+  }
+  select:focus{border-color:var(--accent)}
+  tr.cmp td{background:rgba(91,140,255,.06); border-bottom:1px solid var(--line)}
+  tr.cmp .cmpBox{display:flex; gap:12px; align-items:center; flex-wrap:wrap}
+  .chip{
+    display:inline-block; padding:2px 9px; border-radius:999px; font-size:11.5px;
+    border:1px solid rgba(61,220,151,.4); color:var(--ok);
+  }
+  .chip.bad{border-color:rgba(255,95,109,.45); color:#ffb3b9}
+  .chip.plain{border-color:var(--line); color:var(--dim)}
+  a.dl{color:var(--accent); font-weight:600; text-decoration:none}
+  .spin{display:inline-block; width:14px; height:14px; border:2px solid rgba(255,255,255,.35); border-top-color:#fff; border-radius:50%; animation:sp .7s linear infinite; vertical-align:-2px; margin-right:8px}
+  .spin.dark{border-color:rgba(139,147,167,.35); border-top-color:var(--dim)}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  .empty{color:var(--dim); font-size:13.5px}
+  a{color:var(--accent)}
+  footer{margin-top:26px; color:var(--dim); font-size:12px; text-align:center}
+  code{background:#0e1117; border:1px solid var(--line); padding:1px 6px; border-radius:6px; font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1><span>hellotik 解析</span> · 本地 WebUI</h1>
+    <span class="badge" id="plat">自动识别平台</span>
+  </header>
+  <div class="sub">支持抖音 / 小红书 / 快手 / X（推特）分享链接 · 抖音系两段式解析：先出基础档位，再追最高画质</div>
+
+  <div class="card">
+    <div class="row">
+      <input type="text" id="url" placeholder="粘贴分享链接，例如 https://v.douyin.com/xxxx/ 、小红书 xhslink 或 https://x.com/<用户>/status/<id>" autocomplete="off">
+      <button id="go">解析</button>
+    </div>
+    <div class="opts">
+      <label class="opt"><input type="checkbox" id="more" checked> 追取最高画质（more-size，多花几秒）</label>
+      <label class="opt"><input type="checkbox" id="clear" checked> 解析后清空输入框</label>
+      <label class="opt">压缩到
+        <select id="qh">
+          <option value="360">360p（最小）</option>
+          <option value="480">480p</option>
+          <option value="720" selected>720p</option>
+          <option value="1080">1080p</option>
+        </select>
+      </label>
+      <span id="hint"></span>
+    </div>
+    <div class="msg" id="msg"></div>
+  </div>
+
+  <div class="card" id="result" style="display:none"></div>
+
+  <footer>
+    本机服务：<code id="origin"></code> · 解析结果仅供个人研究备份，请自行确认内容的可用范围
+  </footer>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const PLAT = {douyin:'抖音', rednote:'小红书', kuaishou:'快手', x:'X（推特）'};
+$('origin').textContent = location.origin;
+
+let STATE = null;   // {url, a(phase1), b(phase2)}
+let FFMPEG_OK = false;   // 服务端是否具备压缩能力（/api/status.ffmpeg）
+let COOL_UNTIL = 0, COOL_TIMER = null;
+
+/* 站方按 IP 突发限流（TICKET_IP_RESTRICTED / 429）：给按钮上冷却倒计时，别让用户白点 */
+function startCooldown(btn, sec){
+  COOL_UNTIL = Date.now() + sec * 1000;
+  clearInterval(COOL_TIMER);
+  const tick = () => {
+    const left = Math.ceil((COOL_UNTIL - Date.now()) / 1000);
+    if(left > 0){ btn.disabled = true; btn.textContent = '限流冷却 ' + left + 's'; }
+    else { clearInterval(COOL_TIMER); COOL_UNTIL = 0; btn.disabled = false; btn.textContent = '解析'; }
+  };
+  tick(); COOL_TIMER = setInterval(tick, 500);
+}
+
+function fmtSize(n){
+  if(!n) return '—';
+  const u = ['B','KB','MB','GB']; let i = 0; n = Number(n);
+  while(n >= 1024 && i < u.length-1){ n /= 1024; i++; }
+  return (i === 0 ? n : n.toFixed(n < 10 ? 2 : 1)) + ' ' + u[i];
+}
+function el(tag, cls, text){
+  const e = document.createElement(tag);
+  if(cls) e.className = cls;
+  if(text !== undefined) e.textContent = text;
+  return e;
+}
+function showMsg(text, kind){
+  const m = $('msg');
+  if(!text){ m.className = 'msg'; m.textContent = ''; return; }
+  m.className = 'msg ' + kind; m.textContent = text;
+}
+function guessPlatform(u){
+  if(/(^|[/.])(?:x\.com|twitter\.com|t\.co)\//i.test(u)) return 'x';
+  if(/xiaohongshu|xhslink/i.test(u)) return 'rednote';
+  if(/kuaishou|chenzhongtech/i.test(u)) return 'kuaishou';
+  if(/douyin|iesdouyin/i.test(u)) return 'douyin';
+  return null;
+}
+$('url').addEventListener('input', () => {
+  const p = guessPlatform($('url').value);
+  const b = $('plat');
+  b.className = 'badge' + (p ? ' ' + p : '');
+  b.textContent = p ? '识别为：' + PLAT[p] : '自动识别平台';
+});
+
+function fileName(title, c){
+  return String(title || 'video').replace(/[\\/:*?"<>|\s]+/g,'_').slice(0,60)
+       + '_' + (c.dim || c.label || 'video').replace(/[\\/:*?"<>|]+/g,'') + '.mp4';
+}
+
+/* 只在结果卡里更新档位表，方便两阶段同一张卡上原地刷新 */
+function renderTable(cands, best, loadingText){
+  const box = $('result');
+  const old = box.querySelector('table');
+  if(old) old.remove();
+
+  const table = document.createElement('table');
+  table.innerHTML = '<thead><tr><th>画质</th><th>体积</th><th>分辨率</th><th>来源</th><th></th></tr></thead>';
+  const tb = document.createElement('tbody');
+
+  (cands || []).forEach((c, i) => {
+    const tr = document.createElement('tr');
+    if(i === best) tr.className = 'best';
+
+    const tq = el('td', 'q', c.label || '—');
+    if(i === best) tq.appendChild(el('span', 'tag', '最佳'));
+
+    const td = el('td', null, c.dim || '—');
+    const tsrc = el('td');
+    const b = el('span', 'badge', c.source === 'more-size' ? 'more-size' : 'parse');
+    if(c.source === 'more-size') b.className = 'badge kuaishou';
+    tsrc.appendChild(b);
+    if(c.status && c.status !== 200 && c.status !== 206){
+      const w = el('span','tag','HTTP ' + c.status); w.style.color = 'var(--warn)'; tsrc.appendChild(w);
+    }
+
+    const tact = el('td');
+    const dl = el('button', 'mini', '下载');
+    dl.onclick = () => {
+      const name = fileName(STATE && STATE.a && STATE.a.title, c);
+      dl.disabled = true; const old = dl.textContent; dl.textContent = '准备中…';
+      const a = document.createElement('a');
+      a.href = '/api/file?u=' + encodeURIComponent(c.src) + '&name=' + encodeURIComponent(name);
+      a.download = name;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => { dl.disabled = false; dl.textContent = old; }, 2500);
+    };
+    const cp = el('button', 'mini ghost', '复制直链');
+    cp.style.marginLeft = '8px';
+    cp.onclick = async () => {
+      try{ await navigator.clipboard.writeText(c.proxy); cp.textContent = '已复制'; }
+      catch{ cp.textContent = '复制失败'; }
+      setTimeout(() => cp.textContent = '复制直链', 1600);
+    };
+    tact.appendChild(dl); tact.appendChild(cp);
+
+    const cz = el('button', 'mini ghost', '压缩');
+    cz.style.marginLeft = '8px';
+    if(!FFMPEG_OK){ cz.disabled = true; cz.title = '服务端未安装 ffmpeg，压缩不可用'; }
+    cz.onclick = () => compressRow(c, cz, tb, tr);
+    tact.appendChild(cz);
+
+    tr.append(tq, el('td', null,
+      fmtSize(c.size) + (c.duration ? ' · ' + Math.round(c.duration) + 's' : '')),
+      td, tsrc, tact);
+    tb.appendChild(tr);
+  });
+
+  if(loadingText){
+    const tr = el('tr', 'load');
+    const td = el('td'); td.colSpan = 5;
+    td.appendChild(el('span', 'spin dark'));
+    td.appendChild(document.createTextNode(loadingText));
+    tr.appendChild(td);
+    tb.appendChild(tr);
+  } else if(!(cands || []).length){
+    const tr = el('tr', 'load');
+    const td = el('td', null, '没有可用档位'); td.colSpan = 5;
+    tr.appendChild(td); tb.appendChild(tr);
+  }
+  table.appendChild(tb);
+  box.appendChild(table);
+}
+
+/* ---- 压缩画质：服务端 ffmpeg 重编码，完成后在档位行下面插一行结果 ---- */
+async function compressRow(c, btn, tb, tr){
+  const h = $('qh').value;
+  const name = fileName(STATE && STATE.a && STATE.a.title, c);
+  const old = btn.textContent;
+  btn.disabled = true; btn.textContent = '压缩中…';
+
+  const oldCmp = tr.nextElementSibling && tr.nextElementSibling.classList.contains('cmp')
+               ? tr.nextElementSibling : null;
+  if(oldCmp) oldCmp.remove();
+
+  const anchor = tr;
+  try{
+    const r = await fetch('/api/compress', {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({ src:c.src, name:name, height:h, orig:c.size || 0,
+                             vid:(STATE.url || '') + '|' + ((STATE.a && STATE.a.title) || '') })
+    });
+    const j = await r.json();
+    if(!j.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    btn.textContent = '已压缩';
+    showCompressed(anchor, c, j);
+  }catch(e){
+    btn.textContent = '压缩失败';
+    showCompressed(anchor, c, { ok:false, error:e.message, height:h });
+  }finally{
+    setTimeout(() => { btn.disabled = !FFMPEG_OK; btn.textContent = old; }, 2200);
+  }
+}
+
+function showCompressed(anchor, c, j){
+  const tr = document.createElement('tr');
+  tr.className = 'cmp';
+  const td = document.createElement('td');
+  td.colSpan = 5;
+  const box = el('div', 'cmpBox');
+
+  if(j.ok === false || j.error){
+    box.appendChild(el('span', 'chip bad', '压缩不可用'));
+    box.appendChild(el('span', null, j.error || '未知错误'));
+    td.appendChild(box); tr.appendChild(td);
+    anchor.insertAdjacentElement('afterend', tr);
+    return;
+  }
+
+  const name = j.name || fileName(STATE.a && STATE.a.title, c).replace(/\.mp4$/,'_压缩.mp4');
+  box.appendChild(el('span', 'chip', '压缩档 ' + j.height + 'p'));
+
+  const sv = document.createElement('span');
+  sv.style.fontWeight = '600';
+  sv.textContent = fmtSize(j.size);
+  box.appendChild(sv);
+
+  const orig = c.size || 0;
+  if(orig > 0 && j.size > 0){
+    const pct = Math.max(0, Math.round((1 - j.size/orig) * 100));
+    const s = el('span', 'chip plain', pct > 0 ? ('省 ' + pct + '%') : '没变小');
+    box.appendChild(s);
+    box.appendChild(el('span', null, '原 ' + fmtSize(orig)));
+  }
+  if(j.cached) box.appendChild(el('span', 'chip plain', '缓存命中'));
+  else if(j.secs) box.appendChild(el('span', 'chip plain', j.secs + 's'));
+
+  const a = document.createElement('a');
+  a.className = 'dl'; a.textContent = '下载压缩档';
+  a.href = '/api/cfile?key=' + encodeURIComponent(j.key) + '&name=' + encodeURIComponent(name);
+  a.setAttribute('download', name);
+  box.appendChild(a);
+
+  const tip = el('span', null, '（重编码，非站内原档）');
+  tip.style.color = 'var(--dim)'; tip.style.fontSize = '12px';
+  box.appendChild(tip);
+
+  td.appendChild(box); tr.appendChild(td);
+  anchor.insertAdjacentElement('afterend', tr);
+}function renderInfo(a, url){
+  const box = $('result');
+  box.innerHTML = '';
+  box.style.display = 'block';
+
+  const info = el('div', 'info');
+  if(a.cover){
+    const img = el('img', 'cover');
+    img.loading = 'lazy'; img.alt = '封面';
+    img.src = '/api/img?u=' + encodeURIComponent(a.cover);
+    info.appendChild(img);
+  }
+  const meta = el('div', 'meta');
+  meta.appendChild(el('p', 'title', a.title || '(无标题)'));
+  const line = (k, v) => {
+    const d = el('div', 'kv');
+    d.appendChild(el('span', null, k));
+    const t = el('span', null, v); t.style.color = 'var(--txt)';
+    d.appendChild(t); meta.appendChild(d);
+  };
+  line('平台', PLAT[a.platform] || a.platform || '—');
+  line('类型', a.type || 'video');
+  line('画质档位', fmtSize((a.candidates || []).reduce((m,c)=>Math.max(m, c.size||0), 0)) + ' 以内 · '
+       + (a.complete ? '全部档位已取全' : (a.moreAvailable ? '支持更高画质追取' : '无 more-size 票据')));
+  if(a.linkTtl){
+    const mins = Math.max(0, Math.round((a.linkTtl * 1000 - Date.now()) / 60000));
+    line('直链时效', '约 ' + mins + ' 分钟后过期（下载请走「下载」按钮）');
+  }
+  meta.appendChild(el('div', 'kv', '来源：' + url));
+  info.appendChild(meta);
+  box.appendChild(info);
+
+  const tip = el('div', 'empty', '');
+  tip.style.marginTop = '12px';
+  tip.textContent = a.platform === 'x'
+    ? '提示：X（推特）档位由第三方解析接口给出，文件经 dl.snapcdn.app 服务端代理回源（本机无需连上 X）；直链有时效，过期重新解析即可。'
+    : '提示：more-size 档位来自站内更高码率接口（通常即 1080p 原始档）；直链为站内代理地址、有时效，下载请走「下载」按钮。';
+  box.appendChild(tip);
+}
+
+async function resolve(){
+  const url = $('url').value.trim();
+  if(!/^https?:\/\//.test(url)){ return showMsg('请先粘贴完整的 http(s) 分享链接', 'err'); }
+  const btn = $('go');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin"></span>解析中…';
+  showMsg('阶段一：取票据 → 解析基本信息…', 'warn');
+  $('result').style.display = 'none';
+  STATE = null;
+  try{
+    // ---- 阶段一：gate + parse，秒级出基础档位 ----
+    const r = await fetch('/api/parse', {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({url})
+    });
+    const a = await r.json();
+    if(!a.ok){
+      showMsg('解析失败：' + (a.error || '未知错误') + (a.error_code ? '（' + a.error_code + '）' : ''), 'err');
+      if(a.httpStatus === 429 || /TICKET_IP_RESTRICTED|rate_limited/i.test(String(a.error_code || '') + String(a.error || ''))){
+        startCooldown(btn, 45);
+      }
+      return;
+    }
+    STATE = {url, a, b:null};
+    renderInfo(a, url);
+    const wantMore = a.moreAvailable && !a.complete && $('more').checked;
+    renderTable(a.candidates, a.complete ? a.best : null,
+                wantMore ? '正在追取更高画质（more-size）…' : null);
+    showMsg(a.complete
+      ? '解析完成（' + (a.timing ? a.timing.parse + 's' : '') + '，共 ' + (a.candidates || []).length + ' 个档位）'
+      : (wantMore ? '基础档位已就绪（' + (a.timing ? a.timing.parse + 's' : '') + '）；后台追取最高画质中…' : ''),
+      a.complete ? 'ok' : 'warn');
+    btn.disabled = false; btn.textContent = '解析';
+    if($('clear').checked) $('url').value = '';
+
+    if(!wantMore){
+      if(a.moreAvailable === false && !a.complete){ showMsg('已取到可用档位；该链接未返回 more-size 票据', 'warn'); }
+      return;
+    }
+
+    // ---- 阶段二：more-size + 逐档体积/分辨率 ----
+    const r2 = await fetch('/api/more', {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({sid: a.sid})
+    });
+    const b = await r2.json();
+    if(!b.ok){
+      STATE.b = null;
+      renderTable(a.candidates, null, null);
+      showMsg('基础档位可用；追取最高画质失败：' + (b.error || '未知错误'), 'warn');
+      return;
+    }
+    STATE.b = b;
+    const list = (b.candidates && b.candidates.length) ? b.candidates : a.candidates;
+    renderTable(list, b.best, null);
+    showMsg(b.moreSizeError ? '基础档位可用；more-size 未成功：' + b.moreSizeError : '', b.moreSizeError ? 'warn' : null);
+  }catch(e){
+    showMsg('请求异常：' + e.message, 'err');
+  }finally{
+    if(Date.now() >= COOL_UNTIL){ btn.disabled = false; btn.textContent = '解析'; }
+  }
+}
+
+$('go').onclick = resolve;
+$('url').addEventListener('keydown', e => { if(e.key === 'Enter') resolve(); });
+fetch('/api/status').then(r => r.json()).then(j => {
+  FFMPEG_OK = !!j.ffmpeg;
+  if(j.presets && j.presets.length){
+    $('qh').innerHTML = j.presets.map(h => '<option value="' + h + '"' +
+      (h === '720' ? ' selected' : '') + '>' + h + 'p' + (h === '360' ? '（最小）' : '') + '</option>').join('');
+  }
+  $('hint').textContent = j.ok === false ? '服务未就绪'
+                        : (FFMPEG_OK ? '' : '压缩未启用（服务端缺 ffmpeg）');
+}).catch(() => {});
+</script>
+</body>
+</html>

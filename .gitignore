@@ -1,0 +1,18 @@
+# 依赖二进制（ffmpeg / cloudflared / yt-dlp，每台机器自己下）
+/bin/
+# 运行时产物
+/cache/
+/dl/
+/__pycache__/
+*.pyc
+# 本地访问口令，绝不入库
+/webui_token.txt
+# 第三方站点抓取样本与原始 chunk（见 README「关于逆向证据」）
+/*.js
+/*.html
+/twitter_extractor.py
+# 杂项
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
