@@ -132,8 +132,22 @@ const PLAT = {douyin:'抖音', rednote:'小红书', kuaishou:'快手', x:'X（�
 $('origin').textContent = location.origin;
 
 let STATE = null;   // {url, a(phase1), b(phase2)}
+let ABORT = null;   // 本次解析的取消器：开新解析先取消旧的，旧响应不许覆盖新结果
 let FFMPEG_OK = false;   // 服务端是否具备压缩能力（/api/status.ffmpeg）
 let COOL_UNTIL = 0, COOL_TIMER = null;
+
+function newRun(){
+  if(ABORT) try{ ABORT.abort(); }catch{}
+  ABORT = new AbortController();
+  return ABORT;
+}
+
+/* 源站直链拿不到时，退回本机代理地址（同样支持 Range，可粘进播放器/下载器） */
+function absFile(c){
+  const name = fileName(STATE && STATE.a && STATE.a.title, c);
+  return location.origin + '/api/file?u=' + encodeURIComponent(c.src)
+       + '&name=' + encodeURIComponent(name);
+}
 
 /* 站方按 IP 突发限流（TICKET_IP_RESTRICTED / 429）：给按钮上冷却倒计时，别让用户白点 */
 function startCooldown(btn, sec){
@@ -223,7 +237,11 @@ function renderTable(cands, best, loadingText){
     const cp = el('button', 'mini ghost', '复制直链');
     cp.style.marginLeft = '8px';
     cp.onclick = async () => {
-      try{ await navigator.clipboard.writeText(c.proxy); cp.textContent = '已复制'; }
+      const direct = c.proxy;
+      try{
+        await navigator.clipboard.writeText(direct || absFile(c));
+        cp.textContent = direct ? '已复制' : '已复制(本机)';
+      }
       catch{ cp.textContent = '复制失败'; }
       setTimeout(() => cp.textContent = '复制直链', 1600);
     };
@@ -374,7 +392,9 @@ function showCompressed(anchor, c, j){
 
 async function resolve(){
   const url = $('url').value.trim();
-  if(!/^https?:\/\//.test(url)){ return showMsg('请先粘贴完整的 http(s) 分享链接', 'err'); }
+  if(!/https?:\/\//.test(url)){ return showMsg('请先粘贴分享链接或分享文案（里面要有 http(s) 链接）', 'err'); }
+  const ctl = newRun();
+  const alive = () => ABORT === ctl && !ctl.signal.aborted;
   const btn = $('go');
   btn.disabled = true;
   btn.innerHTML = '<span class="spin"></span>解析中…';
@@ -385,9 +405,10 @@ async function resolve(){
     // ---- 阶段一：gate + parse，秒级出基础档位 ----
     const r = await fetch('/api/parse', {
       method:'POST', headers:{'content-type':'application/json'},
-      body: JSON.stringify({url})
+      body: JSON.stringify({url}), signal: ctl.signal
     });
     const a = await r.json();
+    if(!alive()) return;
     if(!a.ok){
       showMsg('解析失败：' + (a.error || '未知错误') + (a.error_code ? '（' + a.error_code + '）' : ''), 'err');
       if(a.httpStatus === 429 || /TICKET_IP_RESTRICTED|rate_limited/i.test(String(a.error_code || '') + String(a.error || ''))){
@@ -415,9 +436,10 @@ async function resolve(){
     // ---- 阶段二：more-size + 逐档体积/分辨率 ----
     const r2 = await fetch('/api/more', {
       method:'POST', headers:{'content-type':'application/json'},
-      body: JSON.stringify({sid: a.sid})
+      body: JSON.stringify({sid: a.sid}), signal: ctl.signal
     });
     const b = await r2.json();
+    if(!alive()) return;
     if(!b.ok){
       STATE.b = null;
       renderTable(a.candidates, null, null);
@@ -429,9 +451,10 @@ async function resolve(){
     renderTable(list, b.best, null);
     showMsg(b.moreSizeError ? '基础档位可用；more-size 未成功：' + b.moreSizeError : '', b.moreSizeError ? 'warn' : null);
   }catch(e){
+    if(e.name === 'AbortError' || !alive()) return;
     showMsg('请求异常：' + e.message, 'err');
   }finally{
-    if(Date.now() >= COOL_UNTIL){ btn.disabled = false; btn.textContent = '解析'; }
+    if(ABORT === ctl && Date.now() >= COOL_UNTIL){ btn.disabled = false; btn.textContent = '解析'; }
   }
 }
 

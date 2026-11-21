@@ -4,6 +4,7 @@
 /cache/
 /dl/
 /__pycache__/
+__pycache__/
 *.pyc
 # 本地访问口令，绝不入库
 /webui_token.txt
