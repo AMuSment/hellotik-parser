@@ -37,6 +37,8 @@ CREATE_FLAGS = 0x08000000 | 0x00000200
 
 PORT = 8765
 STOP = "--stop" in sys.argv
+# 默认不要口令；想要口令就 --auth（口令仍复用 webui_token.txt）
+AUTH = "--auth" in sys.argv or bool(os.environ.get("HELLOTIK_AUTH"))
 STATUS = "--status" in sys.argv
 for arg in sys.argv[1:]:
     if arg.isdigit():
@@ -44,6 +46,8 @@ for arg in sys.argv[1:]:
 
 
 def token(create=True):
+    if not AUTH:
+        return ""
     if os.path.exists(TOKEN_FILE):
         t = io.open(TOKEN_FILE, encoding="utf-8").read().strip()
         if t:
@@ -107,10 +111,11 @@ def lan_ips():
 
 def report(tok, st, pid=None):
     pid = pid or port_pid()
-    print("  口令   %s" % tok)
-    print("  本机   http://127.0.0.1:%d/?k=%s" % (PORT, tok))
+    q = ("/?k=" + tok) if tok else "/"
+    print("  口令   %s" % (tok or "（未启用）"))
+    print("  本机   http://127.0.0.1:%d%s" % (PORT, q))
     for ip in lan_ips():
-        print("  局域网 http://%s:%d/?k=%s" % (ip, PORT, tok))
+        print("  局域网 http://%s:%d%s" % (ip, PORT, q))
     if pid:
         print("  PID    %d（日志 webui.log）" % pid)
     if st:
@@ -177,8 +182,9 @@ def main():
         report(tok, st)
         return 0
 
-    cmdline = '"%s" -u hellotik_webui.py --public --port %d --token %s --daemon --log "%s"' % (
-        PY, PORT, tok, LOG)
+    auth = (' --token %s' % tok) if tok else " --no-auth"
+    cmdline = '"%s" -u hellotik_webui.py --public --port %d%s --daemon --log "%s"' % (
+        PY, PORT, auth, LOG)
     res = wmi_run(cmdline)
     if res.get("ReturnValue") not in (0, None):
         print("WMI 返回 %s" % res)

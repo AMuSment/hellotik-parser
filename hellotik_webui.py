@@ -777,7 +777,7 @@ class Handler(BaseHTTPRequestHandler):
             k, _, v = part.strip().partition("=")
             if k == COOKIE_NAME:
                 cookie = v
-        given = cookie or (q.get("k", [""])[0])
+        given = (q.get("k", [""])[0]) or cookie
         if not hmac.compare_digest(given, ACCESS_TOKEN or ""):
             if parsed.path in ("/", "/index.html"):
                 return self._send(401, _GATE_HTML, "text/html; charset=utf-8")
@@ -1036,6 +1036,8 @@ def main():
                     help="配合 --fixture：回放站方限流报错，用来验证错误提示与冷却倒计时")
     ap.add_argument("--no-compress", action="store_true",
                     help="禁用压缩功能（即使装了 ffmpeg 也不启用）")
+    ap.add_argument("--no-auth", action="store_true",
+                    help="不要访问口令（局域网里所有人都能用，自己权衡）")
     ap.add_argument("--daemon", action="store_true",
                     help="后台常驻模式：日志追加进 --log，忽略 Ctrl+C（配合 tools/serve_detached.py）")
     ap.add_argument("--log", default=None,
@@ -1057,8 +1059,8 @@ def main():
     FIXTURE_MODE = a.fixture
     FIXTURE_FAIL = a.fixture_fail
     FFMPEG = None if a.no_compress else find_ffmpeg()
-    token = a.token
-    if a.public and not token:
+    token = None if a.no_auth else a.token
+    if a.public and token is None and not a.no_auth:
         token = secrets.token_urlsafe(9)
     ACCESS_TOKEN = token
     host = a.host or ("0.0.0.0" if a.public else "127.0.0.1")

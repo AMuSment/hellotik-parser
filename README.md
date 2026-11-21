@@ -55,7 +55,8 @@ python hellotik_webui.py --port 8765
 python hellotik_webui.py --public --token 我的口令
 ```
 
-打开 `http://127.0.0.1:8765/`（局域网用 `http://<本机IP>:8765/?k=我的口令`，口令会写进 cookie，之后不用再带）。
+打开 `http://127.0.0.1:8765/`（局域网用 `http://<本机IP>:8765/`；带了口令就加 `?k=我的口令`，会写进 cookie，之后不用再带）。
+不想要口令：`--no-auth`（`serve_detached.py` 默认就是不带口令）。
 
 Windows 双击即用：
 
@@ -65,7 +66,8 @@ Windows 双击即用：
 想关掉窗口也让服务活着（后台常驻，日志进 `webui.log`）：
 
 ```bash
-python tools/serve_detached.py          # 起在 8765，打印本机 + 局域网地址与口令
+python tools/serve_detached.py          # 起在 8765，不带口令，打印本机 + 局域网地址
+python tools/serve_detached.py --auth   # 要口令（复用 webui_token.txt）
 python tools/serve_detached.py 8080     # 换端口
 python tools/serve_detached.py --status # 看还在不在、当前地址与状态
 python tools/serve_detached.py --stop   # 停掉（PID 记在 webui.pid）
