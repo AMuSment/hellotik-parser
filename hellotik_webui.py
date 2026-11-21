@@ -39,6 +39,7 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -1035,7 +1036,19 @@ def main():
                     help="配合 --fixture：回放站方限流报错，用来验证错误提示与冷却倒计时")
     ap.add_argument("--no-compress", action="store_true",
                     help="禁用压缩功能（即使装了 ffmpeg 也不启用）")
+    ap.add_argument("--daemon", action="store_true",
+                    help="后台常驻模式：日志追加进 --log，忽略 Ctrl+C（配合 tools/serve_detached.py）")
+    ap.add_argument("--log", default=None,
+                    help="--daemon 时的日志文件，默认仓库根目录的 webui.log")
     a = ap.parse_args()
+    if a.daemon:
+        logp = a.log or os.path.join(HERE, "webui.log")
+        fh = open(logp, "a", encoding="utf-8", buffering=1)
+        sys.stdout = sys.stderr = fh
+        try:
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
+        except Exception:
+            pass
     for stream in (sys.stdout, sys.stderr):   # Windows 控制台中文别花屏
         try:
             stream.reconfigure(encoding="utf-8", errors="replace")

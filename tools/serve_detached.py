@@ -6,11 +6,15 @@
     python tools/serve_detached.py --status   # 只看状态
     python tools/serve_detached.py --stop     # 停
 
-为什么要绕一层 WMI：agent / 终端 / 一次性的 bash 进程都活在 Windows Job Object 里，
-直接 Popen 出来的子进程会跟着作业结束被杀（DETACHED_PROCESS 也救不了，作业不允许 breakaway）。
-Win32_Process.Create 的父级是 WmiPrvSE，不在这个作业里，才能真正常驻。
+为什么要绕 WMI：从终端 / IDE / agent 里 Popen 出来的子进程都挂在同一个 Job Object 上，
+窗口一关整棵树被回收（DETACHED_PROCESS 也不行，作业不允许 breakaway）。
+Win32_Process.Create 的父级是 WmiPrvSE，不在这个作业里。
 
-口令复用 webui_token.txt（没有就生成）；日志 webui.log / webui.err.log；PID 写 webui.pid。
+并且必须带 CREATE_NO_WINDOW|CREATE_NEW_PROCESS_GROUP：WMI 默认让子进程共用调用方的控制台，
+终端一关子进程照样吃 CTRL_CLOSE，日志里会留下一行 ^C 然后服务消失。
+窗口/句柄全断掉之后，日志由 hellotik_webui.py 的 --daemon 自己写文件。
+
+口令复用 webui_token.txt（没有就生成）；日志 webui.log；PID 写 webui.pid。
 """
 import io
 import json
@@ -26,9 +30,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PY = sys.executable
 TOKEN_FILE = os.path.join(ROOT, "webui_token.txt")
 PID_FILE = os.path.join(ROOT, "webui.pid")
-WRAP = os.path.join(ROOT, "_serve.cmd")
 LOG = os.path.join(ROOT, "webui.log")
-ERR = os.path.join(ROOT, "webui.err.log")
+
+# CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP：不共用调用方控制台，Ctrl+C 也不进这个组
+CREATE_FLAGS = 0x08000000 | 0x00000200
 
 PORT = 8765
 STOP = "--stop" in sys.argv
@@ -107,7 +112,7 @@ def report(tok, st, pid=None):
     for ip in lan_ips():
         print("  局域网 http://%s:%d/?k=%s" % (ip, PORT, tok))
     if pid:
-        print("  PID    %d（日志 webui.log / webui.err.log）" % pid)
+        print("  PID    %d（日志 webui.log）" % pid)
     if st:
         print("  状态   " + json.dumps(st, ensure_ascii=False))
     print("  停止   python tools/serve_detached.py --stop")
@@ -118,43 +123,34 @@ def stop():
                          if os.path.exists(PID_FILE) else None)
     if not pid_alive(pid):
         print("没在跑（端口 %d 无监听）" % PORT)
-        for f in (PID_FILE, WRAP):
-            if os.path.exists(f):
-                os.remove(f)
+        if os.path.exists(PID_FILE):
+            os.remove(PID_FILE)
         return 0
     subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
     for _ in range(25):
         time.sleep(0.2)
         if not pid_alive(pid):
             print("已停止 pid=%d" % pid)
-            for f in (PID_FILE, WRAP):
-                if os.path.exists(f):
-                    try:
-                        os.remove(f)
-                    except OSError:
-                        pass
+            if os.path.exists(PID_FILE):
+                try:
+                    os.remove(PID_FILE)
+                except OSError:
+                    pass
             return 0
     print("停止失败，pid=%d 仍在" % pid)
     return 1
 
 
-def write_wrapper(tok):
-    """WMI 只负责执行一个 .cmd：把引号都放在文件里，绕开命令行嵌套引号的坑"""
-    lines = [
-        "@echo off",
-        'cd /d "%s"' % ROOT,
-        '"%s" -u hellotik_webui.py --public --port %d --token %s >> "%s" 2>> "%s"'
-        % (PY, PORT, tok, LOG, ERR),
-    ]
-    io.open(WRAP, "w", encoding="utf-8", newline="\r\n").write("\r\n".join(lines) + "\r\n")
-    return WRAP
-
-
 def wmi_run(script):
-    ps = ("$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create "
-          "-Arguments @{CommandLine='%s'}; "
-          "$r | Select-Object ReturnValue,ProcessId | ConvertTo-Json -Compress"
-          % script.replace("'", "''"))
+    """用 Win32_Process.Create 拉起；PowerShell 里单引号转义即可，不再经过 cmd 剥引号"""
+    ps = (
+        "$si = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly "
+        "-Property @{CreateFlags=[uint32]%d}; "
+        "$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create "
+        "-Arguments @{CommandLine='%s'; CurrentDirectory='%s'; ProcessStartupInformation=$si}; "
+        "$r | Select-Object ReturnValue,ProcessId | ConvertTo-Json -Compress"
+        % (CREATE_FLAGS, script.replace("'", "''"), ROOT.replace("'", "''"))
+    )
     r = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
                        capture_output=True, text=True)
     try:
@@ -181,13 +177,14 @@ def main():
         report(tok, st)
         return 0
 
-    wrap = write_wrapper(tok)
-    res = wmi_run('cmd /c "%s"' % wrap)
+    cmdline = '"%s" -u hellotik_webui.py --public --port %d --token %s --daemon --log "%s"' % (
+        PY, PORT, tok, LOG)
+    res = wmi_run(cmdline)
     if res.get("ReturnValue") not in (0, None):
         print("WMI 返回 %s" % res)
         return 2
 
-    for _ in range(60):
+    for _ in range(80):
         time.sleep(0.25)
         st = probe(tok)
         if st:
@@ -197,9 +194,9 @@ def main():
             print("已启动")
             report(tok, st, pid)
             return 0
-    print("启动超时，看 webui.err.log")
+    print("启动超时，看 webui.log 末尾")
     try:
-        print(io.open(ERR, encoding="utf-8", errors="replace").read()[-800:])
+        print(io.open(LOG, encoding="utf-8", errors="replace").read()[-800:])
     except OSError:
         pass
     return 3

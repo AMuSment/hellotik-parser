@@ -71,12 +71,16 @@ python tools/serve_detached.py --status # 看还在不在、当前地址与状�
 python tools/serve_detached.py --stop   # 停掉（PID 记在 webui.pid）
 ```
 
-它不直接 `Popen`，而是走 Windows 的 `Win32_Process.Create`（WMI）来拉起
-`_serve.cmd`：从终端/IDE/agent 里起的子进程都挂在同一个 Job Object 上，终端一关就整棵树被杀，
-`DETACHED_PROCESS` 也逃不掉；WMI 拉起的进程父级是 `WmiPrvSE`，才能真正活过终端。
-日志分两路写 `webui.log` / `webui.err.log`，起不来时先看后者。
+它不直接 `Popen`，而是走 Windows 的 `Win32_Process.Create`（WMI）：从终端/IDE/agent 里起的
+子进程都挂在同一个 Job Object 上，窗口一关整棵树被回收，`DETACHED_PROCESS` 也逃不掉
+（作业不允许 breakaway）；WMI 拉起的进程父级是 `WmiPrvSE`，才能活过终端。
 
-> 局域网里别的设备打不开时，多半是 Windows 防火墙：以管理员开一次 PowerShell，
+拉起时还带了 `CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP`：WMI 默认让子进程共用调用方的
+控制台，终端一关子进程照样吃 `CTRL_CLOSE`，日志里留一行 `^C` 然后服务没了 —— 现在不共用，
+日志也改由 `hellotik_webui.py --daemon` 自己写文件，不再依赖 shell 重定向。
+
+> 局域网里别的设备打不开时：先在**本机**浏览器打开 `http://127.0.0.1:8765/?k=...` 确认服务活着
+> （死掉时浏览器只是等超时），再看防火墙——以管理员开一次 PowerShell：
 > `New-NetFirewallRule -DisplayName hellotik-WebUI -Direction Inbound -Protocol TCP -LocalPort 8765 -Action Allow`
 > （当前网络若是「公用」，还需要为 python.exe 放行入站；首次监听时系统弹的允许框点「允许」也行。）
 
