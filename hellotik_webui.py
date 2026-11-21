@@ -227,32 +227,44 @@ def compress_video(src, name, height, orig_size=0, vid=""):
     if not allowed(src):
         return {"ok": False, "error": "非白名单源站，拒绝处理"}
     _, page_path = detect(src)
-    target = src if direct_src(src) else proxy_of(src, H.BASE + page_path)
-    if not target:
-        return {"ok": False, "error": "换链失败，拿不到可下载地址"}
     crf, abr = COMPRESS_PRESETS[height]
     os.makedirs(CACHE_DIR, exist_ok=True)
     tmp = out + ".part.mp4"
-    cmd = [FFMPEG, "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
-           "-user_agent", H.UA, "-i", target,
-           # 只取第一条视频轨和（可能存在的）音轨：源站有些档位是多轨/带字幕，直接编码会报错
-           "-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn",
-           "-vf", "scale=-2:%s" % height,
-           "-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf),
-           "-profile:v", "high", "-pix_fmt", "yuv420p",
-           "-c:a", "aac", "-b:a", abr, "-ac", "2",
-           "-movflags", "+faststart", "-max_muxing_queue_size", "1024",
-           "-f", "mp4", tmp]
+    ref = referer_for(src)
+
+    def _cmd(tgt):
+        return [FFMPEG, "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
+                "-user_agent", H.UA, "-referer", ref, "-i", tgt,
+                # 只取第一条视频轨和（可能存在的）音轨：源站有些档位是多轨/带字幕，直接编码会报错
+                "-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn",
+                "-vf", "scale=-2:%s" % height,
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf),
+                "-profile:v", "high", "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", abr, "-ac", "2",
+                "-movflags", "+faststart", "-max_muxing_queue_size", "1024",
+                "-f", "mp4", tmp]
+
     t0 = time.time()
+    r = None
+    # 直连优先（带 referer）：代理只有 ~0.4MB/s，直连能到 4MB/s 以上；失败了再退回代理
+    targets = [src]
+    if not direct_src(src):
+        px = proxy_of(src, H.BASE + page_path)
+        if px:
+            targets.append(px)
     with _COMP_SEM:
-        try:
-            r = subprocess.run(cmd, capture_output=True, timeout=900)
-        except subprocess.TimeoutExpired:
+        for tgt in targets:
             _rm(tmp)
-            return {"ok": False, "error": "编码超时（>15 分钟）"}
-        except Exception as e:
-            _rm(tmp)
-            return {"ok": False, "error": "调用 ffmpeg 失败：%s" % e}
+            try:
+                r = subprocess.run(_cmd(tgt), capture_output=True, timeout=900)
+            except subprocess.TimeoutExpired:
+                _rm(tmp)
+                return {"ok": False, "error": "编码超时（>15 分钟）"}
+            except Exception as e:
+                _rm(tmp)
+                return {"ok": False, "error": "调用 ffmpeg 失败：%s" % e}
+            if r.returncode == 0 and os.path.isfile(tmp) and os.path.getsize(tmp) > 0:
+                break
     if r.returncode != 0 or not os.path.isfile(tmp) or os.path.getsize(tmp) == 0:
         _rm(tmp)
         tail = (r.stderr or b"").decode("utf-8", "replace").strip().splitlines()
@@ -340,11 +352,14 @@ def proxy_of(src, referer):
 
 
 def measure_one(src, referer, timeout=45):
-    """换链 + 一次探测拿 status/size/dim（原先是 HEAD + GET + 两次 GET 共 3~4 个请求）"""
-    px = src if direct_src(src) else proxy_of(src, referer)
-    if not px:
-        return {"status": 0, "size": 0, "dim": None, "proxy": None}
-    m = H.measure(px, referer, timeout=timeout)
+    """一次探测拿 status/size/dim；直连优先（带平台 referer），不通再换站内代理。"""
+    ref = referer_for(src)
+    m = H.measure(src, ref, timeout=timeout)
+    px = src if direct_src(src) else None
+    if not (m.get("status") in (200, 206) and (m.get("size") or 0) > 1024):
+        px = src if direct_src(src) else proxy_of(src, referer)
+        if px:
+            m = H.measure(px, referer, timeout=timeout)
     m["proxy"] = px
     return m
 
@@ -370,6 +385,47 @@ def direct_src(u):
     except Exception:
         return False
     return any(host.endswith(s) for s in DIRECT_SUFFIX)
+
+
+PLATFORM_REFERER = {
+    "douyin": "https://www.douyin.com/",
+    "rednote": "https://www.xiaohongshu.com/",
+    "kuaishou": "https://www.kuaishou.com/",
+    "x": "https://x.com/",
+}
+
+
+def referer_for(src):
+    """源站只校验 referer，不校验来源；拿对 referer 就能直连。
+    实测同一个抖音源文件：直连 4.6 MB/s，走 data.hellotik.app 只有 0.4 MB/s。"""
+    try:
+        return PLATFORM_REFERER.get(detect(src)[0], H.BASE + "/zh/douyin")
+    except Exception:
+        return H.BASE + "/zh/douyin"
+
+
+def open_media(src, page_path=None, rng=None, timeout=120, prefer_direct=True):
+    """打开源文件：先带平台 referer 直连 CDN，失败（403/404/超时）再退回站内代理。
+    返回 (response, 实际用的 URL)。"""
+    hdr = {"user-agent": H.UA, "accept": "*/*", "referer": referer_for(src)}
+    if rng:
+        hdr["range"] = rng
+    if prefer_direct and not direct_src(src):
+        try:
+            r = urllib.request.urlopen(urllib.request.Request(src, headers=hdr), timeout=timeout)
+            if 200 <= r.status < 300:
+                return r, src
+            r.close()
+        except Exception:
+            pass
+    target = src if direct_src(src) else proxy_of(src, H.BASE + (page_path or detect(src)[1]))
+    if not target:
+        raise urllib.error.URLError("换链失败")
+    hdr.pop("range", None)
+    if rng:
+        hdr["range"] = rng
+    return urllib.request.urlopen(urllib.request.Request(target, headers=hdr),
+                                  timeout=timeout), target
 
 
 # ---------------------------------------------------------------- X（推特）
@@ -784,6 +840,42 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(401, {"error": "缺少或错误的口令：在地址后面加上 ?k=<口令>"})
         return True
 
+    def _tune(self):
+        """大文件下发前调一下客户端 socket：关 Nagle、放大收发缓冲。
+        默认缓冲在跨 Wi-Fi 的长肥链路上会把吞吐压到十分之一。"""
+        try:
+            self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            for opt in (socket.SO_SNDBUF, socket.SO_RCVBUF):
+                try:
+                    self.connection.setsockopt(socket.SOL_SOCKET, opt, 1 << 20)
+                except OSError:
+                    pass
+        except OSError:
+            pass
+
+    def _pump(self, src, first=None, chunk=1 << 20, tag="dl"):
+        """把 src 流到客户端，边流边记吞吐（慢的时候能直接看出卡在哪一段）。"""
+        t0 = time.time()
+        sent = 0
+        try:
+            while True:
+                block = src.read(chunk) if first is None else first
+                if first is not None:
+                    first = None
+                    if not block:
+                        break
+                if not block:
+                    break
+                self.wfile.write(block)
+                sent += len(block)
+        finally:
+            dt = time.time() - t0
+            if sent:
+                print("[%s] %s %d bytes %.2fs %.1f MB/s" % (
+                    tag, self.client_address[0], sent, dt, sent / 1048576.0 / max(dt, 1e-6)),
+                    flush=True)
+        return sent
+
     # ---------- GET ----------
     def do_HEAD(self):
         self._head_only = True
@@ -873,12 +965,13 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         if getattr(self, "_head_only", False):
             return
+        self._tune()
         try:
             with open(path, "rb") as f:
                 f.seek(begin)
                 left = last - begin + 1
                 while left > 0:
-                    block = f.read(min(256 * 1024, left))
+                    block = f.read(min(1 << 20, left))
                     if not block:
                         break
                     self.wfile.write(block)
@@ -903,18 +996,10 @@ class Handler(BaseHTTPRequestHandler):
         if not src or not allowed(src):
             return self._send(400, {"error": "非白名单源站，拒绝代理"})
         _, page_path = detect(src)
-        target = src if direct_src(src) else proxy_of(src, H.BASE + page_path)
-        if not target:
-            return self._send(502, {"error": "换链失败"})
-        hdr = {"user-agent": H.UA, "accept": "*/*"}
-        if not direct_src(src):
-            hdr["referer"] = H.BASE + page_path
-        rng = self.headers.get("range")
-        if rng:
-            hdr["range"] = rng                      # 把客户端的 Range 透传给源站
+        rng = self.headers.get("range")            # 把客户端的 Range 透传给源站
         try:
-            with urllib.request.urlopen(
-                    urllib.request.Request(target, headers=hdr), timeout=120) as r:
+            opened, target = open_media(src, page_path, rng=rng, timeout=120)
+            with opened as r:
                 st = 206 if (rng and r.status == 206) else 200
                 self.send_response(st)
                 self.send_header("content-type", r.headers.get("content-type") or "video/mp4")
@@ -930,7 +1015,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 if getattr(self, "_head_only", False):
                     return
-                shutil.copyfileobj(r, self.wfile, 256 * 1024)
+                self._tune()
+                host = urllib.parse.urlparse(target).netloc
+                sent = self._pump(r, tag="dl:" + host)
+                print("[dl] %s target=%s status=%d %d bytes" % (
+                    self.client_address[0], host, st, sent), flush=True)
         except (BrokenPipeError, ConnectionResetError):
             pass
         except Exception as e:
