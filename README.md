@@ -67,8 +67,14 @@ Windows 双击即用：
 ```bash
 python tools/serve_detached.py          # 起在 8765，打印本机 + 局域网地址与口令
 python tools/serve_detached.py 8080     # 换端口
+python tools/serve_detached.py --status # 看还在不在、当前地址与状态
 python tools/serve_detached.py --stop   # 停掉（PID 记在 webui.pid）
 ```
+
+它不直接 `Popen`，而是走 Windows 的 `Win32_Process.Create`（WMI）来拉起
+`_serve.cmd`：从终端/IDE/agent 里起的子进程都挂在同一个 Job Object 上，终端一关就整棵树被杀，
+`DETACHED_PROCESS` 也逃不掉；WMI 拉起的进程父级是 `WmiPrvSE`，才能真正活过终端。
+日志分两路写 `webui.log` / `webui.err.log`，起不来时先看后者。
 
 > 局域网里别的设备打不开时，多半是 Windows 防火墙：以管理员开一次 PowerShell，
 > `New-NetFirewallRule -DisplayName hellotik-WebUI -Direction Inbound -Protocol TCP -LocalPort 8765 -Action Allow`
