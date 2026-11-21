@@ -62,6 +62,18 @@ Windows 双击即用：
 - `start-lan.cmd` —— 只开局域网，口令存 `webui_token.txt` 复用
 - `start-public.cmd` —— 局域网 + `cloudflared` 临时公网隧道（需 `bin/cloudflared.exe`）
 
+想关掉窗口也让服务活着（后台常驻，日志进 `webui.log`）：
+
+```bash
+python tools/serve_detached.py          # 起在 8765，打印本机 + 局域网地址与口令
+python tools/serve_detached.py 8080     # 换端口
+python tools/serve_detached.py --stop   # 停掉（PID 记在 webui.pid）
+```
+
+> 局域网里别的设备打不开时，多半是 Windows 防火墙：以管理员开一次 PowerShell，
+> `New-NetFirewallRule -DisplayName hellotik-WebUI -Direction Inbound -Protocol TCP -LocalPort 8765 -Action Allow`
+> （当前网络若是「公用」，还需要为 python.exe 放行入站；首次监听时系统弹的允许框点「允许」也行。）
+
 ### 2. 命令行
 
 ```bash
@@ -101,6 +113,7 @@ webui/cdp_test.mjs      CDP 无头浏览器端到端测试（解析链路）
 webui/cdp_compress.mjs  同上（压缩链路）
 tests/                  离线单测 + 端到端（自带假 hellotik，不联网）
 tools/bench.py          性能基准：新旧实现同机对比 AES / 混淆链 / 整链解密
+tools/serve_detached.py 后台常驻启动（脱离终端），打印局域网地址，支持 --stop
 tools/mp4_probe.mjs     裸 mp4 探针：逐 trak 报 codec / tkhd 分辨率 / mvhd 时长
 tools/verify_more_size.mjs  more-size 链路验证
 docs/REA_report.md      完整逆向报告（协议细节、实测证据、踩坑清单）

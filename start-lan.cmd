@@ -13,8 +13,23 @@ set HERE=%~dp0
 set PORT=%~1
 if "%PORT%"=="" set PORT=8765
 
-set PY=C:\Users\28672\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe
-if not exist "%PY%" set PY=python.exe
+rem python：优先 DSH 内置运行时（本机 python.exe 常是应用商店占位符，跑不了这段代码）
+set PY=
+for %%R in (dsh-next-primary-runtime dsh-primary-runtime) do (
+  if not defined PY if exist "%USERPROFILE%\.dsh\dsh-runtimes\%%R\dependencies\python\python.exe" (
+    set "PY=%USERPROFILE%\.dsh\dsh-runtimes\%%R\dependencies\python\python.exe"
+  )
+)
+if not defined PY (
+  where py.exe >nul 2>nul && set "PY=py -3"
+)
+if not defined PY (
+  where python.exe >nul 2>nul && set "PY=python.exe"
+)
+if not defined PY (
+  echo [x] python 3 not found - install it or set PY in this file.
+  exit /b 1
+)
 
 if exist "%HERE%webui_token.txt" goto havetoken
 "%PY%" -c "import secrets,sys;open(sys.argv[1],'w',encoding='utf-8').write(secrets.token_urlsafe(9))" "%HERE%webui_token.txt"
