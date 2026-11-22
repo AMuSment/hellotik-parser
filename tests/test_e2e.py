@@ -246,6 +246,22 @@ class TestWebUI(unittest.TestCase):
         cls.srv.shutdown()
         shutil.rmtree(cls.CACHE_DIR, ignore_errors=True)
 
+    def test_parallel_fetch_matches_source(self):
+        """4 路 Range 并发抓取：分块、乱序完成，最后的字节必须和源文件一致"""
+        import hellotik_webui as W
+        total = SIZES[2400]
+        url = self.base + "/media.mp4?br=2400"
+        path = os.path.join(self.CACHE_DIR, "par.bin")
+        p, ready, blk, fh, errs = W.parallel_fetch(
+            url, {"user-agent": "t"}, total, path, parts=3, blk=65536, timeout=20)
+        for ev in ready:
+            self.assertTrue(ev.wait(20), "有块没抓到")
+        fh.close()
+        self.assertFalse(errs, errs)
+        with open(p, "rb") as f:
+            self.assertEqual(f.read(), make_media(2400))
+        os.remove(p)
+
     def _conn(self):
         return http.client.HTTPConnection("127.0.0.1", self.port, timeout=20)
 

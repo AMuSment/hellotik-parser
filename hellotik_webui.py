@@ -36,6 +36,7 @@ import hashlib
 import hmac
 import json
 import os
+import queue
 import re
 import secrets
 import shutil
@@ -170,6 +171,28 @@ _PNG_1PX = base64.b64decode(
 
 # ---------------------------------------------------------------- 压缩（重编码）
 CACHE_DIR = os.path.join(HERE, "cache")
+_FILE_LOCK = threading.Lock()
+
+
+def _cache_path(url, ext=".part"):
+    h = hashlib.sha1(url.encode("utf-8", "replace")).hexdigest()[:24]
+    return os.path.join(CACHE_DIR, h + ext)
+
+
+def _total_of(url, hdr, timeout=20):
+    """用一个 1 字节的 Range 问出总大小（代理链路 HEAD 常被拦，别指望它）。"""
+    h = dict(hdr)
+    h["range"] = "bytes=0-0"
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=h),
+                                    timeout=timeout) as r:
+            cr = r.headers.get("content-range") or ""
+            if "/" in cr:
+                return int(cr.rsplit("/", 1)[1])
+            cl = r.headers.get("content-length")
+            return int(cl) if cl and cl.isdigit() else 0
+    except Exception:
+        return 0
 FFMPEG = None                       # ffmpeg 路径；None = 不支持压缩
 # 目标高度 -> (CRF, 音频码率)
 COMPRESS_PRESETS = {
@@ -404,28 +427,94 @@ def referer_for(src):
         return H.BASE + "/zh/douyin"
 
 
-def open_media(src, page_path=None, rng=None, timeout=120, prefer_direct=True):
-    """打开源文件：先带平台 referer 直连 CDN，失败（403/404/超时）再退回站内代理。
-    返回 (response, 实际用的 URL)。"""
+def host_of(url):
+    try:
+        return urllib.parse.urlparse(url).netloc
+    except Exception:
+        return "?"
+
+
+def _direct_probe(src, hdr, timeout=8):
+    """先用 256KB 的小 Range 探一下直连通不通。
+    直连要是黑洞（连不上/被 403），等 120 秒的超时才回退，用户那边就是「卡着不动」。"""
+    h2 = dict(hdr)
+    h2["range"] = "bytes=0-262143"
+    try:
+        with urllib.request.urlopen(urllib.request.Request(src, headers=h2),
+                                    timeout=timeout) as r:
+            r.read(4096)
+            return True, "ok %d" % r.status
+    except urllib.error.HTTPError as e:
+        return False, "HTTP %d" % e.code
+    except Exception as e:
+        return False, "%s: %s" % (type(e).__name__, str(e)[:80])
+
+
+def resolve_media(src, page_path=None, probe=True, probe_timeout=8):
+    """定下这次到底从哪取：直连 CDN 还是站内代理。返回 (target, 是否直连, 请求头)。"""
     hdr = {"user-agent": H.UA, "accept": "*/*", "referer": referer_for(src)}
-    if rng:
-        hdr["range"] = rng
-    if prefer_direct and not direct_src(src):
-        try:
-            r = urllib.request.urlopen(urllib.request.Request(src, headers=hdr), timeout=timeout)
-            if 200 <= r.status < 300:
-                return r, src
-            r.close()
-        except Exception:
-            pass
+    if probe and not direct_src(src):
+        ok, why = _direct_probe(src, hdr, timeout=probe_timeout)
+        print("[media] 直连 %s -> %s" % (host_of(src), why), flush=True)
+        if ok:
+            return src, True, hdr
     target = src if direct_src(src) else proxy_of(src, H.BASE + (page_path or detect(src)[1]))
     if not target:
         raise urllib.error.URLError("换链失败")
-    hdr.pop("range", None)
+    if not direct_src(src):
+        print("[media] 走代理 %s" % host_of(target), flush=True)
+    return target, direct_src(src), hdr
+
+
+def open_media(src, page_path=None, rng=None, timeout=120, prefer_direct=True):
+    """打开源文件：先带平台 referer 直连 CDN，失败（403/404/超时）再退回站内代理。
+    返回 (response, 实际用的 URL)。"""
+    target, _direct, hdr = resolve_media(src, page_path,
+                                         probe=prefer_direct, probe_timeout=8)
     if rng:
         hdr["range"] = rng
     return urllib.request.urlopen(urllib.request.Request(target, headers=hdr),
                                   timeout=timeout), target
+
+
+def parallel_fetch(url, hdr, total, path, parts=4, blk=2 << 20, timeout=60):
+    """多路 Range 并发抓取到磁盘：代理单连接会被限速或中途停顿，
+    一路读一路写就会把客户端吊在那里（实测 2MB 卡 375 秒）。
+    返回 (path, 每块的就绪事件, 块大小, 写句柄, 错误列表)。"""
+    nblk = (total + blk - 1) // blk
+    ready = [threading.Event() for _ in range(nblk)]
+    todo = queue.Queue()
+    for i in range(nblk):
+        todo.put(i)
+    errs = []
+    fh = open(path, "wb", buffering=0)
+    fh.truncate(total)
+
+    def worker():
+        while True:
+            try:
+                i = todo.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                h = dict(hdr)
+                h["range"] = "bytes=%d-%d" % (i * blk, min(total, (i + 1) * blk) - 1)
+                with urllib.request.urlopen(
+                        urllib.request.Request(url, headers=h), timeout=timeout) as r:
+                    data = r.read()
+                if not data:
+                    raise IOError("空块 %d" % i)
+                with _FILE_LOCK:
+                    fh.seek(i * blk)
+                    fh.write(data)
+            except Exception as e:  # noqa: BLE001
+                errs.append(e)
+            finally:
+                ready[i].set()
+
+    for _ in range(max(1, min(parts, nblk))):
+        threading.Thread(target=worker, daemon=True).start()
+    return path, ready, blk, fh, errs
 
 
 # ---------------------------------------------------------------- X（推特）
@@ -687,6 +776,10 @@ def phase_parse(url):
         for k in [k for k, v in SESSIONS.items() if time.time() - v["ts"] > SESS_TTL]:
             SESSIONS.pop(k, None)
     token = p.get("moreSizeToken")
+    print("[parse] platform=%s tier=%s cands=%d 首档=%s size=%s" % (
+        platform, r.get("qualityTier"), len(cands),
+        host_of(cands[0]["src"]) if cands else "-", cands[0]["size"] if cands else "-"),
+        flush=True)
     return {
         "ok": True, "sid": sid, "platform": platform,
         "title": p.get("title"), "type": p.get("type"), "cover": p.get("cover"),
@@ -857,23 +950,33 @@ class Handler(BaseHTTPRequestHandler):
         """把 src 流到客户端，边流边记吞吐（慢的时候能直接看出卡在哪一段）。"""
         t0 = time.time()
         sent = 0
+        up = 0.0
+        down = 0.0
+        idx = 0
         try:
             while True:
+                t1 = time.time()
                 block = src.read(chunk) if first is None else first
                 if first is not None:
                     first = None
-                    if not block:
-                        break
                 if not block:
                     break
+                t2 = time.time()
                 self.wfile.write(block)
+                t3 = time.time()
+                idx += 1
+                up += t2 - t1
+                down += t3 - t2
                 sent += len(block)
+                if t3 - t1 > 2.0:
+                    print("[%s] 第 %d 块 %d bytes 用了 %.1fs（上游 %.1fs / 下发 %.1fs）" % (
+                        tag, idx, len(block), t3 - t1, t2 - t1, t3 - t2), flush=True)
         finally:
             dt = time.time() - t0
             if sent:
-                print("[%s] %s %d bytes %.2fs %.1f MB/s" % (
-                    tag, self.client_address[0], sent, dt, sent / 1048576.0 / max(dt, 1e-6)),
-                    flush=True)
+                print("[%s] %s %d bytes %.2fs %.1f MB/s（上游 %.2fs / 下发 %.2fs）" % (
+                    tag, self.client_address[0], sent, dt,
+                    sent / 1048576.0 / max(dt, 1e-6), up, down), flush=True)
         return sent
 
     # ---------- GET ----------
@@ -984,6 +1087,94 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+    def _serve_file(self, path, name, ctype="video/mp4"):
+        """把一个磁盘文件带 Range 下发（缓存命中时走这里，和 cfile 等价）。"""
+        size = os.path.getsize(path)
+        rg = self._range(size)
+        if rg is None:
+            return self._send(416, {"error": "range 不可满足"},
+                              extra={"content-range": "bytes */%d" % size})
+        st, begin, last = rg
+        self.send_response(st)
+        self.send_header("content-type", ctype)
+        self.send_header("content-length", str(last - begin + 1))
+        if st == 206:
+            self.send_header("content-range", "bytes %d-%d/%d" % (begin, last, size))
+        self.send_header("accept-ranges", "bytes")
+        self.send_header("content-disposition",
+                         "attachment; filename*=UTF-8''" + urllib.parse.quote(name))
+        self.send_header("cache-control", "no-store")
+        self.end_headers()
+        if getattr(self, "_head_only", False):
+            return 0
+        self._tune()
+        with open(path, "rb") as f:
+            f.seek(begin)
+            left = last - begin + 1
+            t0 = time.time()
+            sent = 0
+            while left > 0:
+                block = f.read(min(left, 1 << 20))
+                if not block:
+                    break
+                self.wfile.write(block)
+                sent += len(block)
+                left -= len(block)
+            dt = max(time.time() - t0, 1e-6)
+            print("[dl:cache] %s %d bytes %.2fs %.1f MB/s" % (
+                self.client_address[0], sent, dt, sent / 1048576.0 / dt), flush=True)
+        return sent
+
+    def _parallel_prefetch(self, url, hdr, total, parts=4, blk=2 << 20, timeout=60):
+        return parallel_fetch(url, hdr, total, _cache_path(url), parts, blk, timeout)
+
+    def _serve_parallel(self, url, hdr, total, name):
+        """并发预取 + 顺序下发：哪块先到先缓存，客户端按顺序拿，不再被慢连接吊住。"""
+        path, ready, blk, fh, errs = self._parallel_prefetch(url, hdr, total)
+        self.send_response(200)
+        self.send_header("content-type", "video/mp4")
+        self.send_header("content-length", str(total))
+        self.send_header("accept-ranges", "bytes")
+        self.send_header("content-disposition",
+                         "attachment; filename*=UTF-8''" + urllib.parse.quote(name))
+        self.send_header("cache-control", "no-store")
+        self.end_headers()
+        if getattr(self, "_head_only", False):
+            fh.close()
+            return 0
+        self._tune()
+        t0 = time.time()
+        sent = 0
+        rf = open(path, "rb")
+        try:
+            for i in range(len(ready)):
+                if not ready[i].wait(300):
+                    print("[dl:par] 第 %d 块 300 秒未就绪，断开" % i, flush=True)
+                    self.close_connection = True
+                    return sent
+                want = min(blk, total - i * blk)
+                rf.seek(i * blk)
+                block = rf.read(want)
+                if len(block) != want:
+                    print("[dl:par] 第 %d 块不完整 %d/%d，断开（%s）" % (
+                        i, len(block), want, errs[-1] if errs else "-"), flush=True)
+                    self.close_connection = True
+                    return sent
+                self.wfile.write(block)
+                sent += len(block)
+        finally:
+            rf.close()
+            fh.close()
+            dt = max(time.time() - t0, 1e-6)
+            print("[dl:par] %s %d bytes %.2fs %.1f MB/s" % (
+                self.client_address[0], sent, dt, sent / 1048576.0 / dt), flush=True)
+            if sent == total:
+                try:
+                    os.replace(path, _cache_path(url, ".mp4"))
+                except OSError:
+                    pass
+        return sent
+
     def download(self, q):
         src = (q.get("u") or [""])[0]
         name = (q.get("name") or ["video.mp4"])[0]
@@ -996,10 +1187,23 @@ class Handler(BaseHTTPRequestHandler):
         if not src or not allowed(src):
             return self._send(400, {"error": "非白名单源站，拒绝代理"})
         _, page_path = detect(src)
+        name = re.sub(r"[\\/:*?\"<>|\r\n]+", "_", name) or "video.mp4"
+        hit = _cache_path(src, ".mp4")
+        if os.path.isfile(hit) and os.path.getsize(hit) > 1024:
+            print("[dl] 缓存命中 %s" % host_of(src), flush=True)
+            return self._serve_file(hit, name)
         rng = self.headers.get("range")            # 把客户端的 Range 透传给源站
         try:
-            opened, target = open_media(src, page_path, rng=rng, timeout=120)
-            with opened as r:
+            target, direct, hdr = resolve_media(src, page_path)
+            total = 0 if direct else _total_of(target, hdr)
+            if not direct and not rng and total > (1 << 20):
+                print("[dl] 代理并发预取 %s %d bytes（4 路）" % (host_of(target), total),
+                      flush=True)
+                return self._serve_parallel(target, hdr, total, name)
+            if rng:
+                hdr["range"] = rng
+            with urllib.request.urlopen(urllib.request.Request(target, headers=hdr),
+                                        timeout=120) as r:
                 st = 206 if (rng and r.status == 206) else 200
                 self.send_response(st)
                 self.send_header("content-type", r.headers.get("content-type") or "video/mp4")
